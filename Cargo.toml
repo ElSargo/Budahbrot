@@ -7,7 +7,6 @@ edition = "2021"
 
 [dependencies]
 image = "0.24.4"
-complex = {path = "../complex"}
 rand = "*"
 itertools = "*"
 rgb_hsv = "1.0.1"

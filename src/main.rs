@@ -79,7 +79,6 @@ fn main() -> Result<(), impl std::error::Error> {
 }
 
 use image::ImageBuffer;
-use complex::Complex;
 use image::Rgb;
 use itertools::izip;
 use rand::prelude::*;
@@ -94,3 +93,81 @@ fn complex_to_image(complex: Complex) -> (usize, usize) {
     return ((i * SIZE_AS_F64) as usize, (j * SIZE_AS_F64) as usize);
 }
 
+#[derive(Clone, Default, Copy, Debug)]
+pub struct Complex {
+    pub r: f64,
+    pub i: f64,
+}
+
+impl Complex {
+    pub const fn new(r: f64, i: f64) -> Self {
+        Self { r, i }
+    }
+
+    pub fn len(&self) -> f64 {
+        (self.r * self.r + self.i * self.i).sqrt()
+    }
+}
+
+use std::ops::Add;
+impl Add for Complex {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            r: self.r + rhs.r,
+            i: self.i + rhs.i,
+        }
+    }
+}
+
+impl Sub for Complex {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        Self {
+            r: self.r - rhs.r,
+            i: self.i - rhs.i,
+        }
+    }
+}
+
+use std::ops::Mul;
+impl Mul for Complex {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        Self {
+            r: self.r * rhs.r - self.i * rhs.i,
+            i: self.r * rhs.i + self.i * rhs.r,
+        }
+    }
+}
+
+impl Add<f64> for Complex {
+    type Output = Self;
+    fn add(self, rhs: f64) -> Self {
+        Self {
+            r: self.r + rhs,
+            i: self.i + rhs,
+        }
+    }
+}
+
+use std::ops::Sub;
+impl Sub<f64> for Complex {
+    type Output = Self;
+    fn sub(self, rhs: f64) -> Self {
+        Self {
+            r: self.r - rhs,
+            i: self.i - rhs,
+        }
+    }
+}
+
+impl Mul<f64> for Complex {
+    type Output = Self;
+    fn mul(self, rhs: f64) -> Self {
+        Self {
+            r: self.r * rhs,
+            i: self.i * rhs,
+        }
+    }
+}
