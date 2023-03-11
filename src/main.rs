@@ -1,58 +1,25 @@
-const IMAGE_SIZE: usize = 2000;
-const SIMULATION_BOUNDS: f64 = 2.;
-const SAMPLES: usize = 2000;
+const IMAGE_SIZE: usize = 2000; // In pixels (x by x png)
 const NUM_THREADS: usize = 4;
-const ITERATIONS: [usize; 3] = [10000, 1000, 100];
-const WEIGHTS: [f64; 3] = [1., 1.2, 1.5];
-const ORDERING: Ordering = Ordering::SeqCst;
+
+const SAMPLES: usize = 2000; // Per pixel
+const ITERATIONS: [usize; 3] = [10000, 1000, 100]; // Iterations for [red, green, blue] channels
+const WEIGHTS: [f64; 3] = [1., 1.2, 1.5]; // Gamma coeficeint for [red, green, blue]
 
 fn main() -> Result<(), impl std::error::Error> {
     let image_data = Arc::new([
-        // Mutexes can't be cloned, vec![val;3]
-        Mutex::new(vec![vec![0.0; IMAGE_SIZE]; IMAGE_SIZE]),
-        Mutex::new(vec![vec![0.0; IMAGE_SIZE]; IMAGE_SIZE]),
-        Mutex::new(vec![vec![0.0; IMAGE_SIZE]; IMAGE_SIZE]),
+        // Mutexes can't be cloned, [val;3]
+        Mutex::new([[0.0; IMAGE_SIZE]; IMAGE_SIZE]),
+        Mutex::new([[0.0; IMAGE_SIZE]; IMAGE_SIZE]),
+        Mutex::new([[0.0; IMAGE_SIZE]; IMAGE_SIZE]),
     ]);
     let mut handels = Vec::with_capacity(NUM_THREADS);
-    let sampled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sampled = Arc::new(AtomicUsize::new(0));
     for _ in 0..NUM_THREADS {
         let sampled = sampled.clone();
         let data = image_data.clone();
 
         handels.push(thread::spawn(move || {
-            let mut rng = thread_rng();
-            while sampled.load(ORDERING) < SAMPLES {
-                println!(
-                    "Computing {} of {SAMPLES} samples",
-                    sampled.fetch_add(1, ORDERING) + 1
-                );
-                for _ in 0..IMAGE_SIZE * IMAGE_SIZE {
-                    for (channel, channel_iterations, weight) in
-                        izip!(data.iter(), ITERATIONS.iter(), WEIGHTS.iter())
-                    {
-                        let c = Complex::new(rng.gen(), rng.gen());
-                        let c = (c - 0.5) * 2. * SIMULATION_BOUNDS;
-                        let mut entered = Vec::new();
-                        let mut z = Complex::new(0., 0.);
-                        for _ in 0..*channel_iterations {
-                            z = z * z + c;
-                            if z.i.abs() > 2. && z.r.abs() > 2. {
-                                let mut data = channel.lock().unwrap();
-                                for c in entered {
-                                    let coord = complex_to_image(c);
-                                    if let Some(row) = data.get_mut(coord.0) {
-                                        if let Some(brightnes) = row.get_mut(coord.1) {
-                                            *brightnes += weight
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                            entered.push(z);
-                        }
-                    }
-                }
-            }
+            render(data, sampled);
         }));
     }
 
@@ -78,13 +45,68 @@ fn main() -> Result<(), impl std::error::Error> {
     image.save("Result.png")
 }
 
+fn render(data: Arc<[Mutex<ChannelData>; 3]>, sampled: Arc<AtomicUsize>) {
+    let mut rng = thread_rng();
+    while sampled.load(ORDERING) < SAMPLES {
+        println!(
+            "Computing {} of {SAMPLES} samples",
+            sampled.fetch_add(1, ORDERING) + 1
+        );
+        // image quality should be resolution indepentent
+        for _ in 0..IMAGE_SIZE * IMAGE_SIZE {
+            for (channel, channel_iterations, weight) in
+                izip!(data.iter(), ITERATIONS.iter(), WEIGHTS.iter())
+            {
+                accumlate_samples(channel, channel_iterations, weight, &mut rng);
+            }
+        }
+    }
+}
+
+type ChannelData = [[f64; IMAGE_SIZE]; IMAGE_SIZE];
+
+fn accumlate_samples(
+    channel: &Mutex<ChannelData>,
+    channel_iterations: &usize,
+    weight: &f64,
+    rng: &mut ThreadRng,
+) {
+    let c = Complex::new(rng.gen(), rng.gen());
+    let c = (c - 0.5) * 2. * SIMULATION_BOUNDS;
+    let mut entered = Vec::new();
+    let mut z = Complex::new(0., 0.);
+    for _ in 0..*channel_iterations {
+        z = z * z + c;
+        if z.i.abs() > 2. && z.r.abs() > 2. {
+            break;
+        }
+        entered.push(z);
+    }
+    let mut data = channel.lock().unwrap();
+    for c in entered {
+        let coord = complex_to_image(c);
+        if let Some(row) = data.get_mut(coord.0) {
+            if let Some(brightnes) = row.get_mut(coord.1) {
+                *brightnes += weight
+            }
+        }
+    }
+}
+
 use image::ImageBuffer;
 use image::Rgb;
 use itertools::izip;
 use rand::prelude::*;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::ops::Add;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+};
+const ORDERING: Ordering = Ordering::SeqCst;
+const SIMULATION_BOUNDS: f64 = 2.;
 
 fn complex_to_image(complex: Complex) -> (usize, usize) {
     const SIZE_AS_F64: f64 = IMAGE_SIZE as f64;
@@ -109,7 +131,6 @@ impl Complex {
     }
 }
 
-use std::ops::Add;
 impl Add for Complex {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {

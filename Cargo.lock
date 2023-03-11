@@ -33,7 +33,6 @@ dependencies = [
  "image",
  "itertools",
  "rand",
- "rgb_hsv",
 ]
 
 [[package]]
@@ -489,12 +488,6 @@ dependencies = [
  "crossbeam-utils",
  "num_cpus",
 ]
-
-[[package]]
-name = "rgb_hsv"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fec0123e8720dcbc31a22f3ecb7dc5cb41f4b73e361eca37d4acf0b04f572589"
 
 [[package]]
 name = "scoped_threadpool"
