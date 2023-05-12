@@ -1,16 +1,17 @@
-const IMAGE_SIZE: usize = 2000; // In pixels (x by x png)
-const NUM_THREADS: usize = 4;
+const IMAGE_SIZE: usize = 200; // In pixels (x by x png)
+const NUM_THREADS: usize = 20;
 
 const SAMPLES: usize = 2000; // Per pixel
-const ITERATIONS: [usize; 3] = [10000, 1000, 100]; // Iterations for [red, green, blue] channels
-const WEIGHTS: [f64; 3] = [1., 1.2, 1.5]; // Gamma coeficeint for [red, green, blue]
-
+const ITERATIONS: [usize; 3] = [10000, 5000, 1000]; // Iterations for [red, green, blue] channels
+const WEIGHTS: [usize; 3] = [1, 1, 1]; // Gamma coeficeint for [red, green, blue]
+const ATOMIC_USIZE_INIT: AtomicUsize = AtomicUsize::new(0);
+const ATOMIC_ARRAY_INIT: [AtomicUsize; IMAGE_SIZE] = [ATOMIC_USIZE_INIT; IMAGE_SIZE];
 fn main() -> Result<(), impl std::error::Error> {
     let image_data = Arc::new([
         // Mutexes can't be cloned, [val;3]
-        Mutex::new([[0.0; IMAGE_SIZE]; IMAGE_SIZE]),
-        Mutex::new([[0.0; IMAGE_SIZE]; IMAGE_SIZE]),
-        Mutex::new([[0.0; IMAGE_SIZE]; IMAGE_SIZE]),
+        [ATOMIC_ARRAY_INIT; IMAGE_SIZE],
+        [ATOMIC_ARRAY_INIT; IMAGE_SIZE],
+        [ATOMIC_ARRAY_INIT; IMAGE_SIZE],
     ]);
     let mut handels = Vec::with_capacity(NUM_THREADS);
     let sampled = Arc::new(AtomicUsize::new(0));
@@ -28,16 +29,16 @@ fn main() -> Result<(), impl std::error::Error> {
     }
 
     let mut image = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(IMAGE_SIZE as u32, IMAGE_SIZE as u32);
-    let red_image = image_data[0].lock().unwrap();
-    let green_image = image_data[1].lock().unwrap();
-    let blue_image = image_data[2].lock().unwrap();
+    let red_image = &image_data[0];
+    let green_image = &image_data[1];
+    let blue_image = &image_data[2];
 
     for x in 0..IMAGE_SIZE {
         for y in 0..IMAGE_SIZE {
             let pixel = Rgb::from([
-                red_image[x][y] as u16,
-                green_image[x][y] as u16,
-                blue_image[x][y] as u16,
+                (red_image[x][y].load(ORDERING) as f64 / 1000.0) as u16,
+                (green_image[x][y].load(ORDERING) as f64 / 500.0) as u16,
+                (blue_image[x][y].load(ORDERING) as f64 / 100.0) as u16,
             ]);
             image.put_pixel(x as u32, y as u32, pixel);
         }
@@ -45,7 +46,7 @@ fn main() -> Result<(), impl std::error::Error> {
     image.save("Result.png")
 }
 
-fn render(data: Arc<[Mutex<ChannelData>; 3]>, sampled: Arc<AtomicUsize>) {
+fn render(data: Arc<[ChannelData; 3]>, sampled: Arc<AtomicUsize>) {
     let mut rng = thread_rng();
     while sampled.load(ORDERING) < SAMPLES {
         println!(
@@ -63,12 +64,12 @@ fn render(data: Arc<[Mutex<ChannelData>; 3]>, sampled: Arc<AtomicUsize>) {
     }
 }
 
-type ChannelData = [[f64; IMAGE_SIZE]; IMAGE_SIZE];
+type ChannelData = [[AtomicUsize; IMAGE_SIZE]; IMAGE_SIZE];
 
 fn accumlate_samples(
-    channel: &Mutex<ChannelData>,
+    channel: &ChannelData,
     channel_iterations: &usize,
-    weight: &f64,
+    weight: &usize,
     rng: &mut ThreadRng,
 ) {
     let c = Complex::new(rng.gen(), rng.gen());
@@ -82,12 +83,11 @@ fn accumlate_samples(
         }
         entered.push(z);
     }
-    let mut data = channel.lock().unwrap();
     for c in entered {
         let coord = complex_to_image(c);
-        if let Some(row) = data.get_mut(coord.0) {
-            if let Some(brightnes) = row.get_mut(coord.1) {
-                *brightnes += weight
+        if let Some(row) = channel.get(coord.0) {
+            if let Some(brightnes) = row.get(coord.1) {
+                brightnes.fetch_add(*weight, ORDERING);
             }
         }
     }
@@ -97,11 +97,12 @@ use image::ImageBuffer;
 use image::Rgb;
 use itertools::izip;
 use rand::prelude::*;
+
 use std::ops::Add;
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     thread,
 };
