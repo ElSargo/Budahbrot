@@ -1,195 +1,167 @@
-const IMAGE_SIZE: usize = 200; // In pixels (x by x png)
-const NUM_THREADS: usize = 20;
+#![feature(const_trait_impl)]
+use glam::{DVec2, UVec2};
+use image::{ImageBuffer, Rgb};
+use rand::{thread_rng, Rng};
+use std::sync::atomic::{AtomicUsize, Ordering};
+const NUM_WORKERS: usize = 20;
+const RESOLUTION: usize = 500;
+const SAMPLES: usize = 50;
+const ITERATIONS: [usize; 3] = [5000, 500, 50];
+const WEIGHTS: [f64; 3] = [15.0, 15.0, 10.0];
 
-const SAMPLES: usize = 2000; // Per pixel
-const ITERATIONS: [usize; 3] = [10000, 5000, 1000]; // Iterations for [red, green, blue] channels
-const WEIGHTS: [usize; 3] = [1, 1, 1]; // Gamma coeficeint for [red, green, blue]
-const ATOMIC_USIZE_INIT: AtomicUsize = AtomicUsize::new(0);
-const ATOMIC_ARRAY_INIT: [AtomicUsize; IMAGE_SIZE] = [ATOMIC_USIZE_INIT; IMAGE_SIZE];
-fn main() -> Result<(), impl std::error::Error> {
-    let image_data = Arc::new([
-        // Mutexes can't be cloned, [val;3]
-        [ATOMIC_ARRAY_INIT; IMAGE_SIZE],
-        [ATOMIC_ARRAY_INIT; IMAGE_SIZE],
-        [ATOMIC_ARRAY_INIT; IMAGE_SIZE],
-    ]);
-    let mut handels = Vec::with_capacity(NUM_THREADS);
-    let sampled = Arc::new(AtomicUsize::new(0));
-    for _ in 0..NUM_THREADS {
-        let sampled = sampled.clone();
-        let data = image_data.clone();
-
-        handels.push(thread::spawn(move || {
-            render(data, sampled);
-        }));
-    }
-
-    for handel in handels {
-        handel.join().unwrap();
-    }
-
-    let mut image = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(IMAGE_SIZE as u32, IMAGE_SIZE as u32);
-    let red_image = &image_data[0];
-    let green_image = &image_data[1];
-    let blue_image = &image_data[2];
-
-    for x in 0..IMAGE_SIZE {
-        for y in 0..IMAGE_SIZE {
-            let pixel = Rgb::from([
-                (red_image[x][y].load(ORDERING) as f64 / 1000.0) as u16,
-                (green_image[x][y].load(ORDERING) as f64 / 500.0) as u16,
-                (blue_image[x][y].load(ORDERING) as f64 / 100.0) as u16,
-            ]);
-            image.put_pixel(x as u32, y as u32, pixel);
+fn main() {
+    let data = Box::new([ATOMIC_NESTED_ARRAY_INIT; 3]);
+    let sample_count = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..NUM_WORKERS {
+            s.spawn(|| {
+                let mut rng = thread_rng();
+                // Make it resolution independent
+                while sample_count.fetch_add(1, Ordering::Relaxed) < TOTAL_SAMPLES {
+                    let mut stack = [Cmplx::ZERO; MAX_ITER + 1];
+                    let mut z = Cmplx::ZERO;
+                    let c = Cmplx::new(rng.gen_range(-2.0..2.0), rng.gen_range(-2.0..2.0));
+                    let mut i = 0;
+                    while i <= MAX_ITER && z.length() < 2.0 {
+                        z = z * z + c;
+                        stack[i] = z;
+                        i += 1;
+                    }
+                    for channel in 0..3 {
+                        let iterations = ITERATIONS[channel];
+                        if i > ITERATIONS[channel] || i == 0 {
+                            continue;
+                        }
+                        for idx in 0..(iterations.min(i)) {
+                            let coord = cmplx_to_pixel(stack[idx]);
+                            match data[channel]
+                                .get(coord.x as usize)
+                                .and_then(|row| row.get(coord.y as usize))
+                            {
+                                Some(pixel) => {
+                                    pixel.fetch_add(IWEIGHTS[channel], Ordering::Relaxed)
+                                }
+                                None => break,
+                            };
+                        }
+                    }
+                }
+            });
         }
-    }
-    image.save("Result.png")
-}
+    });
 
-fn render(data: Arc<[ChannelData; 3]>, sampled: Arc<AtomicUsize>) {
-    let mut rng = thread_rng();
-    while sampled.load(ORDERING) < SAMPLES {
-        println!(
-            "Computing {} of {SAMPLES} samples",
-            sampled.fetch_add(1, ORDERING) + 1
-        );
-        // image quality should be resolution indepentent
-        for _ in 0..IMAGE_SIZE * IMAGE_SIZE {
-            for (channel, channel_iterations, weight) in
-                izip!(data.iter(), ITERATIONS.iter(), WEIGHTS.iter())
-            {
-                accumlate_samples(channel, channel_iterations, weight, &mut rng);
-            }
-        }
-    }
-}
+    let mut image: ImageBuffer<Rgb<u16>, Vec<_>> =
+        ImageBuffer::new(RESOLUTION as u32, RESOLUTION as u32);
+    let red_channel = &data[0];
+    let green_channel = &data[1];
+    let blue_channel = &data[2];
 
-type ChannelData = [[AtomicUsize; IMAGE_SIZE]; IMAGE_SIZE];
-
-fn accumlate_samples(
-    channel: &ChannelData,
-    channel_iterations: &usize,
-    weight: &usize,
-    rng: &mut ThreadRng,
-) {
-    let c = Complex::new(rng.gen(), rng.gen());
-    let c = (c - 0.5) * 2. * SIMULATION_BOUNDS;
-    let mut entered = Vec::new();
-    let mut z = Complex::new(0., 0.);
-    for _ in 0..*channel_iterations {
-        z = z * z + c;
-        if z.i.abs() > 2. && z.r.abs() > 2. {
-            break;
-        }
-        entered.push(z);
+    let pixel = |x: usize, y: usize| -> [u16; 3] {
+        [
+            (red_channel[x][y].load(Ordering::Relaxed) * u16::MAX as f64) as u16,
+            (green_channel[x][y].load(Ordering::Relaxed) * u16::MAX as f64) as u16,
+            (blue_channel[x][y].load(Ordering::Relaxed) * u16::MAX as f64) as u16,
+        ]
+    };
+    for (x, y) in (0..RESOLUTION)
+        .map(|x| (0..RESOLUTION).map(move |y| (x, y)))
+        .flatten()
+    {
+        *image.get_pixel_mut(x as u32, y as u32) = Rgb::from(pixel(x, y));
     }
-    for c in entered {
-        let coord = complex_to_image(c);
-        if let Some(row) = channel.get(coord.0) {
-            if let Some(brightnes) = row.get(coord.1) {
-                brightnes.fetch_add(*weight, ORDERING);
-            }
-        }
+    if let Err(e) = image.save("result.png") {
+        println!("{:?}", e);
     }
 }
 
-use image::ImageBuffer;
-use image::Rgb;
-use itertools::izip;
-use rand::prelude::*;
-
-use std::ops::Add;
-use std::{
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-    thread,
-};
-const ORDERING: Ordering = Ordering::SeqCst;
-const SIMULATION_BOUNDS: f64 = 2.;
-
-fn complex_to_image(complex: Complex) -> (usize, usize) {
-    const SIZE_AS_F64: f64 = IMAGE_SIZE as f64;
-    let i = complex.r * 0.5 / SIMULATION_BOUNDS + 0.5;
-    let j = complex.i * 0.5 / SIMULATION_BOUNDS + 0.5;
-    return ((i * SIZE_AS_F64) as usize, (j * SIZE_AS_F64) as usize);
+#[derive(Default, Debug, PartialEq, Copy, Clone)]
+struct Cmplx {
+    data: DVec2,
 }
 
-#[derive(Clone, Default, Copy, Debug)]
-pub struct Complex {
-    pub r: f64,
-    pub i: f64,
-}
-
-impl Complex {
-    pub const fn new(r: f64, i: f64) -> Self {
-        Self { r, i }
-    }
-
-    pub fn len(&self) -> f64 {
-        (self.r * self.r + self.i * self.i).sqrt()
-    }
-}
-
-impl Add for Complex {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self {
+impl Cmplx {
+    const ZERO: Self = Self::new(0.0, 0.0);
+    const fn new(x: f64, y: f64) -> Self {
         Self {
-            r: self.r + rhs.r,
-            i: self.i + rhs.i,
+            data: DVec2 { x, y },
+        }
+    }
+
+    fn length(&self) -> f64 {
+        self.data.length()
+    }
+}
+
+impl std::ops::Mul for Cmplx {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Self::new(
+            self.data.x * rhs.data.x - self.data.y * rhs.data.y,
+            self.data.x * rhs.data.y + self.data.y * rhs.data.x,
+        )
+    }
+}
+
+impl std::ops::Mul<f64> for Cmplx {
+    type Output = Self;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        Self {
+            data: self.data * rhs,
         }
     }
 }
 
-impl Sub for Complex {
+impl std::ops::Add for Cmplx {
     type Output = Self;
-    fn sub(self, rhs: Self) -> Self {
+
+    fn add(self, rhs: Self) -> Self::Output {
+        (self.data + rhs.data).into()
+    }
+}
+
+impl From<DVec2> for Cmplx {
+    fn from(value: DVec2) -> Self {
+        Self { data: value }
+    }
+}
+impl From<[f64; 2]> for Cmplx {
+    fn from(value: [f64; 2]) -> Self {
         Self {
-            r: self.r - rhs.r,
-            i: self.i - rhs.i,
+            data: DVec2 {
+                x: value[0],
+                y: value[1],
+            },
         }
     }
 }
 
-use std::ops::Mul;
-impl Mul for Complex {
-    type Output = Self;
-    fn mul(self, rhs: Self) -> Self {
-        Self {
-            r: self.r * rhs.r - self.i * rhs.i,
-            i: self.r * rhs.i + self.i * rhs.r,
-        }
+impl Into<DVec2> for Cmplx {
+    fn into(self) -> DVec2 {
+        self.data
     }
 }
 
-impl Add<f64> for Complex {
-    type Output = Self;
-    fn add(self, rhs: f64) -> Self {
-        Self {
-            r: self.r + rhs,
-            i: self.i + rhs,
-        }
+fn cmplx_to_pixel(cmplx: Cmplx) -> UVec2 {
+    const FRESOLUTION: f64 = RESOLUTION as f64;
+    let neg_two_to_two: DVec2 = cmplx.into();
+    let normal = neg_two_to_two * 0.25 + 0.5;
+    let pix = normal * FRESOLUTION;
+    UVec2 {
+        x: pix.x as u32,
+        y: pix.y as u32,
     }
 }
 
-use std::ops::Sub;
-impl Sub<f64> for Complex {
-    type Output = Self;
-    fn sub(self, rhs: f64) -> Self {
-        Self {
-            r: self.r - rhs,
-            i: self.i - rhs,
-        }
-    }
-}
-
-impl Mul<f64> for Complex {
-    type Output = Self;
-    fn mul(self, rhs: f64) -> Self {
-        Self {
-            r: self.r * rhs,
-            i: self.i * rhs,
-        }
-    }
-}
+const ATOMIC_ZERO: atomic_float::AtomicF64 = atomic_float::AtomicF64::new(0.0);
+const ATOMIC_ARRAY_INIT: [atomic_float::AtomicF64; RESOLUTION] = [ATOMIC_ZERO; RESOLUTION];
+const ATOMIC_NESTED_ARRAY_INIT: [[atomic_float::AtomicF64; RESOLUTION]; RESOLUTION] =
+    [ATOMIC_ARRAY_INIT; RESOLUTION];
+const MAX_ITER: usize = ITERATIONS[0].max(ITERATIONS[1].max(ITERATIONS[2]));
+const TOTAL_SAMPLES: usize = NUM_WORKERS * SAMPLES * RESOLUTION * RESOLUTION;
+const IWEIGHTS: [f64; 3] = [
+    1.0 / (WEIGHTS[0] * SAMPLES as f64 * NUM_WORKERS as f64),
+    1.0 / (WEIGHTS[1] * SAMPLES as f64 * NUM_WORKERS as f64),
+    1.0 / (WEIGHTS[2] * SAMPLES as f64 * NUM_WORKERS as f64),
+];

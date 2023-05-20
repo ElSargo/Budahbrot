@@ -9,3 +9,7 @@ edition = "2021"
 image = {version = "0.24.4", features = ["jpeg"]}
 rand = "*"
 itertools = "*"
+glam = "*"
+crossbeam = "*"
+atomic_float = "*"
+heapless = "0.7.16"
