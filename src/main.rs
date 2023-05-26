@@ -4,7 +4,7 @@ use image::{ImageBuffer, Rgb};
 use rand::{thread_rng, Rng};
 use std::sync::atomic::{AtomicUsize, Ordering};
 const NUM_WORKERS: usize = 20;
-const RESOLUTION: usize = 500;
+const RESOLUTION: usize = 450;
 const SAMPLES: usize = 50;
 const ITERATIONS: [usize; 3] = [5000, 500, 50];
 const WEIGHTS: [f64; 3] = [15.0, 15.0, 10.0];
